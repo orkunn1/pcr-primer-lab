@@ -1,0 +1,122 @@
+import argparse
+import re
+import sys
+
+AA_ORDER = "ARNDCQEGHILKMFPSTWYV"
+BLOSUM_GRID = [
+    [4,-1,-2,-2,0,-1,-1,0,-2,-1,-1,-1,-1,-2,-1,1,0,-3,-2,0],
+    [-1,5,0,-2,-3,1,0,-2,0,-3,-2,2,-1,-3,-2,-1,-1,2,-2,-3],
+    [-2,0,6,1,-3,0,0,0,1,-3,-3,0,-2,-3,-2,1,0,-4,-2,-3],
+    [-2,-2,1,6,-3,0,2,-1,-1,-3,-4,-1,-3,-3,-1,0,-1,-4,-3,-3],
+    [0,-3,-3,-3,9,-3,-4,-3,-3,-1,-1,-3,-1,-2,-3,-1,-1,-2,-2,-1],
+    [-1,1,0,0,-3,5,2,-2,0,-3,-2,1,0,-3,-1,0,-1,-2,-1,-2],
+    [-1,0,0,2,-4,2,5,-2,0,-3,-3,1,-2,-3,-1,0,-1,-3,-2,-2],
+    [0,-2,0,-1,-3,-2,-2,6,-2,-4,-4,-2,-3,-3,-2,0,-2,-2,-3,-3],
+    [-2,0,1,-1,-3,0,0,-2,8,-3,-3,-1,-2,-1,-2,-1,-2,-2,2,-3],
+    [-1,-3,-3,-3,-1,-3,-3,-4,-3,4,2,-3,1,0,-3,-2,-1,-1,-1,3],
+    [-1,-2,-3,-4,-1,-2,-3,-4,-3,2,4,-2,2,0,-3,-2,-1,-2,-1,1],
+    [-1,2,0,-1,-3,1,1,-2,-1,-3,-2,5,-1,-3,-1,0,-1,-3,-2,-2],
+    [-1,-1,-2,-3,-1,0,-2,-3,-2,1,2,-1,5,0,-2,-1,-1,-1,-1,1],
+    [-2,-3,-3,-3,-2,-3,-3,-3,-1,0,0,-3,0,6,-4,-2,-2,1,3,-1],
+    [-1,-2,-2,-1,-3,-1,-1,-2,-2,-3,-3,-1,-2,-4,7,-1,-1,-4,-3,-2],
+    [1,-1,1,0,-1,0,0,0,-1,-2,-2,0,-1,-2,-1,4,1,-3,-2,-2],
+    [0,-1,0,-1,-1,-1,-1,-2,-2,-1,-1,-1,-1,-2,-1,1,5,-2,-2,0],
+    [-3,2,-4,-4,-2,-2,-3,-2,-2,-1,-2,-3,-1,1,-4,-3,-2,11,2,-3],
+    [-2,-2,-2,-3,-2,-1,-2,-3,2,-1,-1,-2,-1,3,-3,-2,-2,2,7,-1],
+    [0,-3,-3,-3,-1,-2,-2,-3,-3,3,1,-2,1,-1,-2,-2,0,-3,-1,4]
+]
+
+BLOSUM62 = {}
+for i, aa1 in enumerate(AA_ORDER):
+    for j, aa2 in enumerate(AA_ORDER):
+        BLOSUM62[(aa1, aa2)] = BLOSUM_GRID[i][j]
+
+HYDROPATHY = {
+    'I': 4.5, 'V': 4.2, 'L': 3.8, 'F': 2.8, 'C': 2.5,
+    'M': 1.9, 'A': 1.8, 'G': -0.4, 'T': -0.7, 'S': -0.8,
+    'W': -0.9, 'Y': -1.3, 'P': -1.6, 'H': -3.2, 'E': -3.5,
+    'Q': -3.5, 'D': -3.5, 'N': -3.5, 'K': -3.9, 'R': -4.5
+}
+
+CHARGES = {
+    'K': 1, 'R': 1, 'H': 0.5,
+    'D': -1, 'E': -1
+}
+
+
+def score_substitution(wt: str, mut: str) -> dict:
+    wt, mut = wt.upper(), mut.upper()
+    if wt not in AA_ORDER or mut not in AA_ORDER:
+        raise ValueError(f"Invalid amino acid residue: {wt} or {mut}")
+        
+    blosum = BLOSUM62.get((wt, mut), -4)
+    dh = round(HYDROPATHY[mut] - HYDROPATHY[wt], 2)
+    dq = CHARGES.get(mut, 0) - CHARGES.get(wt, 0)
+    
+    if blosum >= 0 and abs(dh) <= 1.5 and dq == 0:
+        effect = "Conservative"
+    elif blosum < 0 or abs(dh) > 3.0 or dq != 0:
+        effect = "Radical"
+    else:
+        effect = "Moderate"
+        
+    return {
+        "blosum62": blosum,
+        "delta_hydro": dh,
+        "delta_charge": dq,
+        "effect": effect
+    }
+
+
+def parse_mutation(mut_str: str):
+    clean = mut_str.replace("p.", "").strip()
+    match = re.match(r"^([A-Z])(\d+)([A-Z])$", clean, re.IGNORECASE)
+    if not match:
+        return None
+    wt, pos, mut = match.groups()
+    return wt.upper(), int(pos), mut.upper()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Score amino acid mutations using BLOSUM62 and physicochemical shifts.")
+    parser.add_argument("mutations", nargs="*", help="Mutations to score (e.g. V600E p.A123T R45K)")
+    parser.add_argument("-f", "--file", help="File containing list of mutations")
+
+    args = parser.parse_args()
+    mut_list = list(args.mutations) if args.mutations else []
+
+    if args.file:
+        try:
+            with open(args.file, "r") as f:
+                for line in f:
+                    item = line.strip()
+                    if item and not item.startswith("#"):
+                        mut_list.append(item)
+        except FileNotFoundError:
+            print(f"Error: File '{args.file}' not found.", file=sys.stderr)
+            sys.exit(1)
+
+    if not mut_list:
+        parser.print_help()
+        sys.exit(1)
+
+    print(f"{'Mutation':<12}{'BLOSUM62':<10}{'dHydro':<10}{'dCharge':<10}{'Effect'}")
+    print("-" * 52)
+
+    for item in mut_list:
+        parsed = parse_mutation(item)
+        if not parsed:
+            print(f"{item:<12} [Invalid format]")
+            continue
+
+        wt, pos, mut = parsed
+        try:
+            res = score_substitution(wt, mut)
+            mut_name = f"{wt}{pos}{mut}"
+            print(f"{mut_name:<12}{res['blosum62']:<10}{res['delta_hydro']:<10}{res['delta_charge']:<10}{res['effect']}")
+        except ValueError as e:
+            print(f"{item:<12} {e}")
+
+
+if __name__ == "__main__":
+    main()
